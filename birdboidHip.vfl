@@ -1,105 +1,167 @@
-// birdboidHip.c (VEX for Attribute Wrangle)
-// 各ポイントの近傍を探索し、簡易的なboid挙動を実装
+// Init用 VEX（Detail, only once）
+// ========== パラメータ（WrangleのSpare Parmで追加） ==========
+// int    n_birds   = 100;
+// float  width     = 25.0;
 
-float radius = 1.0; // 近傍探索半径
-vector sep = {0,0,0};
-vector ali = {0,0,0};
-vector coh = {0,0,0};
-int count = 0;
+// 出力ジオメトリを初期化
+removeprim(0, "*", 1);
+removepoint(0, "*");
 
-int handle = pcopen(0, "P", @P, radius, 10);
-while (pciterate(handle))
+// ランダムシード
+int seed = chi("seed"); // UIに int seed を追加してね
+float w   = ch("width");
+int   n   = chi("n_birds");
+
+// ポイント作成と vel 初期化
+for (int i=0; i<n; i++)
 {
-	vector pos = pcimport(handle, "P");
-	vector vel = pcimport(handle, "v");
+    // 元コード同様、フィールド中央 2/5〜3/5 に出現
+    vector P;
+    P.x = fit01(rand(set(i,seed,0)), 0.4*w, 0.6*w);
+    P.y = fit01(rand(set(i,seed,1)), 0.4*w, 0.6*w);
+    P.z = 0.0;
 
-	// Separation
-	sep += normalize(@P - pos);
+    int pt = addpoint(0, P);
 
-	// Alignment
-	ali += vel;
+    // 進行方向ベクトル：(-0.5〜0.5)相当のランダム
+    vector v0 = set(rand(set(i,seed,2)) - 0.5,
+                    rand(set(i,seed,3)) - 0.5,
+                    0.0);
+    if (length(v0) < 1e-6) v0 = set(0.1,0.0,0.0);
+    v0 = normalize(v0);
 
-	// Cohesion
-	coh += pos;
-
-	count += 1;
+    setpointattrib(0, "vel", pt, v0, "set");
 }
-if (count > 0)
+
+// 可視化用に Cd を初期化
+addvariablename("Cd", "Cd");
+
+
+
+// シミュレーション VEX（Points, every frame）
+// ========= パラメータ =========
+// 近傍半径（ドーナツ型の内外）
+float r_min_c = ch("r_min_c");  // Cohesion 内側
+float r_max_c = ch("r_max_c");  // Cohesion 外側
+float r_min_s = ch("r_min_s");  // Separation 内側
+float r_max_s = ch("r_max_s");  // Separation 外側
+float r_min_a = ch("r_min_a");  // Alignment 内側
+float r_max_a = ch("r_max_a");  // Alignment 外側
+
+// 係数
+float k1 = ch("k1");  // 結合係数
+float k2 = ch("k2");  // 分離係数
+float k3 = ch("k3");  // 整列係数
+float v  = ch("speed"); // 進行速度（ステップ幅）
+float e  = ch("repulsion"); // 壁反発係数
+
+// フィールドサイズと視野角
+float width = ch("width");
+float fov   = ch("fov"); // ラジアン（例：pi/3）
+
+// ========= ユーティリティ関数 ==========
+
+// 点 p の rmin〜rmax にいる近傍の point 配列を得る
+int[] in_range_points(int p; float rmin; float rmax)
 {
-	ali /= count;
-	coh = (coh/count) - @P;
+    vector Pself = point(0, "P", p);
+    int pts[] = nearpoints(0, Pself, rmax);
+    int res[] = {};
+    foreach (int q; pts)
+    {
+        if (q==p) continue;
+        float d = distance(Pself, point(0,"P",q));
+        if (d > rmin && d < rmax)
+            append(res, q);
+    }
+    return res;
 }
 
-// 各要素の重み
-float sep_weight = 1.5;
-float ali_weight = 1.0;
-float coh_weight = 1.0;
-
-// 新しい速度
-vector newv = sep * sep_weight + ali * ali_weight + coh * coh_weight;
-@v += newv * 0.05; // 速度に加算
-@P += @v * @TimeInc; // 位置を更新
-
-
-
-
-// 距離計算（2点間の距離）
-float get_distance(vector a, vector b) {
-    return length(a - b);
+// Cohesion/Separation 用：重心（なければ擬似ノイズ付きの自身座標）
+vector get_cg(int p; float rmin; float rmax)
+{
+    int nbrs[] = in_range_points(p, rmin, rmax);
+    if (len(nbrs)==0)
+    {
+        vector P = point(0,"P",p);
+        // ごく小さいランダム揺らぎ
+        float j = 0.0002;
+        vector n = set(rand(set(p,1))-0.5, rand(set(p,2))-0.5, 0)*2*j;
+        return P + n;
+    }
+    vector sum = {0,0,0};
+    foreach (int q; nbrs) sum += point(0,"P",q);
+    return sum / float(len(nbrs));
 }
 
-// 範囲内の重心を取得
-vector get_cg(int id; float r_min; float r_max; int num; vector pos_array[]) {
-    vector cg = pos_array[id];
-    int count = 0;
-    cg = set(0,0,0);
-    for (int i = 0; i < num; i++) {
-        if (i == id) continue;
-        float d = length(pos_array[i] - pos_array[id]);
-        if (d > r_min && d < r_max) {
-            cg += pos_array[i];
-            count++;
+// Alignment 用：視野角内の近傍の平均速度ベクトル
+vector get_alignment(int p; float rmin; float rmax; float fov)
+{
+    int nbrs[] = in_range_points(p, rmin, rmax);
+    if (len(nbrs)==0) return {0,0,0};
+
+    vector Pself = point(0,"P",p);
+    vector Vself = normalize(point(0,"vel",p));
+
+    vector acc = {0,0,0};
+    int cnt = 0;
+
+    foreach (int q; nbrs)
+    {
+        vector Pq = point(0,"P",q);
+        vector dir_to_q = normalize(Pq - Pself);
+
+        // 視野角：acos(dot)) < fov で判定
+        float ang = acos(clamp(dot(Vself, dir_to_q), -1.0, 1.0));
+        if (ang < fov)
+        {
+            acc += point(0,"vel",q);
+            cnt++;
         }
     }
-    if (count > 0)
-        cg /= count;
-    else
-        cg = pos_array[id];
-    return cg;
-}
-
-// 範囲内のベクトル平均（整列）
-vector get_vec(int id; float r_min; float r_max; int num; vector pos_array[]; vector vec_array[]; float lambda) {
-    vector avg = set(0,0,0);
-    int count = 0;
-    for (int i = 0; i < num; i++) {
-        if (i == id) continue;
-        float d = length(pos_array[i] - pos_array[id]);
-        if (d > r_min && d < r_max) {
-            vector line_vec = pos_array[i] - pos_array[id];
-            float theta = atan2(line_vec.y, line_vec.x);
-            float phi = atan2(vec_array[id].y, vec_array[id].x);
-            if ((phi - lambda) < theta && theta < (phi + lambda)) {
-                avg += vec_array[i];
-                count++;
-            }
-        }
-    }
-    if (count > 0)
-        avg /= count;
+    if (cnt==0) return {0,0,0};
+    vector avg = acc / float(cnt);
     return avg;
 }
 
-// 壁反発ベクトル
-vector get_repulsion(int id; int num; vector pos_array[]; float width) {
-    vector rep = set(0,0,0);
-    float left = pos_array[id].x - 0;
-    float right = width - pos_array[id].x;
-    float under = pos_array[id].y - 0;
-    float upper = width - pos_array[id].y;
-    if (left < 1) rep += set(1,0,0) / pow(left,2);
-    if (right < 1) rep += set(-1,0,0) / pow(right,2);
-    if (under < 1) rep += set(0,1,0) / pow(under,2);
-    if (upper < 1) rep += set(0,-1,0) / pow(upper,2);
-    return rep;
+// 壁反発：フィールドは [0,width]×[0,width] の箱を想定
+vector get_repulsion(int p; float width)
+{
+    vector P = point(0,"P",p);
+    float left  = P.x - 0.0;
+    float right = width - P.x;
+    float under = P.y - 0.0;
+    float upper = width - P.y;
+
+    vector vL = {0,0,0}, vR = {0,0,0}, vU = {0,0,0}, vD = {0,0,0};
+
+    if (left  < 1.0) vL = set( 1, 0, 0) / max(left*left, 1e-4);
+    if (right < 1.0) vR = set(-1, 0, 0) / max(right*right,1e-4);
+    if (under < 1.0) vD = set( 0, 1, 0) / max(under*under,1e-4);
+    if (upper < 1.0) vU = set( 0,-1, 0) / max(upper*upper,1e-4);
+
+    return vL + vR + vD + vU;
 }
+
+// ========= メイン（1ポイントごと） =========
+
+vector P  = @P;
+vector V  = v@vel;
+if (length(V) < 1e-6) V = set(1,0,0);
+
+// 3ルールの目標ベクトル
+vector cohesion   = get_cg(@ptnum, r_min_c, r_max_c) - P;
+vector separation = get_cg(@ptnum, r_min_s, r_max_s) - P; // 元実装に合わせる（重心差で避ける）
+vector alignment  = get_alignment(@ptnum, r_min_a, r_max_a, fov);
+vector repul      = get_repulsion(@ptnum, width);
+
+// 合成（元コードの符号＋係数）
+vector vT = V + k1*cohesion - k2*separation + k3*alignment + e*repul;
+if (length2(vT) > 1e-12) vT = normalize(vT);
+
+// 位置と速度を更新（Solver が前フレーム保持）
+@P     = P + vT * v;
+v@vel  = vT;
+
+// お好みで色づけ
+@Cd = set(0.2, 0.5, 1.0);

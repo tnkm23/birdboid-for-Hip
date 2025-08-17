@@ -59,7 +59,6 @@ def GetCG(id, r_min, r_max) :
     
         cg = pos[id] + ((np.random.rand(2)* 2 - 1) * 0.0002)
         return cg # ドーナツ内に誰もいなかったら、自分の座標を返す
-        # * 0.0002は適当に決めた。数字を変えれば、鳥のモゾモゾ具合を調節できる。
 
     else :
 
@@ -147,29 +146,6 @@ def GetRepulsion(id) :
 
 # ====================以下メインで動かすところ====================
 # まずはArtistanimationの準備
-def update_points_in_houdini():
-    import hou
-    geo = hou.pwd().geometry()
-    points = geo.points()
-
-    # 位置情報を取得
-    positions = [p.position() for p in points]
-
-    # birdboidアルゴリズムで新しい位置を計算（例: ここでは単純にx方向に移動）
-    # 必要に応じて既存のbirdboidロジックを関数化して呼び出す
-    new_positions = []
-    for pos in positions:
-        # 例: x方向に0.1移動
-        new_pos = hou.Vector3(pos[0] + 0.1, pos[1], pos[2])
-        new_positions.append(new_pos)
-
-    # ポイントの位置を更新
-    for p, new_pos in zip(points, new_positions):
-        p.setPosition(new_pos)
-
-# Houdini Python SOP用エントリポイント
-def main():
-    update_points_in_houdini()
 fig = plt.figure() # 描画領域の確保
 img_list = [] # パラパラ漫画の1枚1枚を保存する空の容器(list)
 
