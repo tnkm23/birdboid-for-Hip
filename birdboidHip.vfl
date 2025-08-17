@@ -1,0 +1,105 @@
+// birdboidHip.c (VEX for Attribute Wrangle)
+// 各ポイントの近傍を探索し、簡易的なboid挙動を実装
+
+float radius = 1.0; // 近傍探索半径
+vector sep = {0,0,0};
+vector ali = {0,0,0};
+vector coh = {0,0,0};
+int count = 0;
+
+int handle = pcopen(0, "P", @P, radius, 10);
+while (pciterate(handle))
+{
+	vector pos = pcimport(handle, "P");
+	vector vel = pcimport(handle, "v");
+
+	// Separation
+	sep += normalize(@P - pos);
+
+	// Alignment
+	ali += vel;
+
+	// Cohesion
+	coh += pos;
+
+	count += 1;
+}
+if (count > 0)
+{
+	ali /= count;
+	coh = (coh/count) - @P;
+}
+
+// 各要素の重み
+float sep_weight = 1.5;
+float ali_weight = 1.0;
+float coh_weight = 1.0;
+
+// 新しい速度
+vector newv = sep * sep_weight + ali * ali_weight + coh * coh_weight;
+@v += newv * 0.05; // 速度に加算
+@P += @v * @TimeInc; // 位置を更新
+
+
+
+
+// 距離計算（2点間の距離）
+float get_distance(vector a, vector b) {
+    return length(a - b);
+}
+
+// 範囲内の重心を取得
+vector get_cg(int id; float r_min; float r_max; int num; vector pos_array[]) {
+    vector cg = pos_array[id];
+    int count = 0;
+    cg = set(0,0,0);
+    for (int i = 0; i < num; i++) {
+        if (i == id) continue;
+        float d = length(pos_array[i] - pos_array[id]);
+        if (d > r_min && d < r_max) {
+            cg += pos_array[i];
+            count++;
+        }
+    }
+    if (count > 0)
+        cg /= count;
+    else
+        cg = pos_array[id];
+    return cg;
+}
+
+// 範囲内のベクトル平均（整列）
+vector get_vec(int id; float r_min; float r_max; int num; vector pos_array[]; vector vec_array[]; float lambda) {
+    vector avg = set(0,0,0);
+    int count = 0;
+    for (int i = 0; i < num; i++) {
+        if (i == id) continue;
+        float d = length(pos_array[i] - pos_array[id]);
+        if (d > r_min && d < r_max) {
+            vector line_vec = pos_array[i] - pos_array[id];
+            float theta = atan2(line_vec.y, line_vec.x);
+            float phi = atan2(vec_array[id].y, vec_array[id].x);
+            if ((phi - lambda) < theta && theta < (phi + lambda)) {
+                avg += vec_array[i];
+                count++;
+            }
+        }
+    }
+    if (count > 0)
+        avg /= count;
+    return avg;
+}
+
+// 壁反発ベクトル
+vector get_repulsion(int id; int num; vector pos_array[]; float width) {
+    vector rep = set(0,0,0);
+    float left = pos_array[id].x - 0;
+    float right = width - pos_array[id].x;
+    float under = pos_array[id].y - 0;
+    float upper = width - pos_array[id].y;
+    if (left < 1) rep += set(1,0,0) / pow(left,2);
+    if (right < 1) rep += set(-1,0,0) / pow(right,2);
+    if (under < 1) rep += set(0,1,0) / pow(under,2);
+    if (upper < 1) rep += set(0,-1,0) / pow(upper,2);
+    return rep;
+}
